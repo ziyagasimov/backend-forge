@@ -1,80 +1,100 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel
 from typing import List, Optional
+from sqlalchemy.orm import Session
+from app.db_models import SessionLocal, Task as DBTask
 
 router = APIRouter()
 
-# Simulated DB
-tasks_db = {}
-
-class Task(BaseModel):
-    id: int
-    title: str
-    description: Optional[str] = None
-    status: str  # todo, in-progress, done
-    assigned_to: Optional[str] = None
-    project_id: Optional[int] = None
-
-class TaskCreate(BaseModel):
+class TaskBase(BaseModel):
     title: str
     description: Optional[str] = None
     status: str
     assigned_to: Optional[str] = None
     project_id: Optional[int] = None
 
-# Task CRUD
-@router.post("/tasks", response_model=Task)
-def create_task(task: TaskCreate):
-    task_id = len(tasks_db) + 1
-    t = Task(id=task_id, **task.dict())
-    tasks_db[task_id] = t
-    return t
+class TaskCreate(TaskBase):
+    pass
 
-@router.get("/tasks", response_model=List[Task])
+class TaskOut(TaskBase):
+    id: int
+    class Config:
+        from_attributes = True
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Task CRUD
+@router.post("/tasks", response_model=TaskOut)
+def create_task(task: TaskCreate, db: Session = Depends(get_db)):
+    db_task = DBTask(
+        title=task.title,
+        description=task.description,
+        status=task.status,
+        assigned_to=task.assigned_to,
+        project_id=task.project_id
+    )
+    db.add(db_task)
+    db.commit()
+    db.refresh(db_task)
+    return db_task
+
+@router.get("/tasks", response_model=List[TaskOut])
 def list_tasks(
     status: Optional[str] = Query(None),
     assigned_to: Optional[str] = Query(None),
     project_id: Optional[int] = Query(None),
     skip: int = 0,
-    limit: int = 10
+    limit: int = 10,
+    db: Session = Depends(get_db)
 ):
-    filtered = list(tasks_db.values())
+    query = db.query(DBTask)
     if status:
-        filtered = [t for t in filtered if t.status == status]
+        query = query.filter(DBTask.status == status)
     if assigned_to:
-        filtered = [t for t in filtered if t.assigned_to == assigned_to]
+        query = query.filter(DBTask.assigned_to == assigned_to)
     if project_id:
-        filtered = [t for t in filtered if t.project_id == project_id]
-    return filtered[skip:skip+limit]
+        query = query.filter(DBTask.project_id == project_id)
+    return query.offset(skip).limit(limit).all()
 
-@router.get("/tasks/{task_id}", response_model=Task)
-def get_task(task_id: int):
-    t = tasks_db.get(task_id)
+@router.get("/tasks/{task_id}", response_model=TaskOut)
+def get_task(task_id: int, db: Session = Depends(get_db)):
+    t = db.query(DBTask).filter(DBTask.id == task_id).first()
     if not t:
         raise HTTPException(status_code=404, detail="Task not found")
     return t
 
-@router.put("/tasks/{task_id}", response_model=Task)
-def update_task(task_id: int, task: TaskCreate):
-    if task_id not in tasks_db:
+@router.put("/tasks/{task_id}", response_model=TaskOut)
+def update_task(task_id: int, task: TaskCreate, db: Session = Depends(get_db)):
+    db_task = db.query(DBTask).filter(DBTask.id == task_id).first()
+    if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
-    t = Task(id=task_id, **task.dict())
-    tasks_db[task_id] = t
-    return t
+    for key, value in task.dict().items():
+        setattr(db_task, key, value)
+    db.commit()
+    db.refresh(db_task)
+    return db_task
 
 @router.delete("/tasks/{task_id}")
-def delete_task(task_id: int):
-    if task_id not in tasks_db:
+def delete_task(task_id: int, db: Session = Depends(get_db)):
+    db_task = db.query(DBTask).filter(DBTask.id == task_id).first()
+    if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
-    del tasks_db[task_id]
+    db.delete(db_task)
+    db.commit()
     return {"msg": "Task deleted"}
 
 # Status update
-@router.patch("/tasks/{task_id}/status")
-def update_task_status(task_id: int, status: str):
-    t = tasks_db.get(task_id)
-    if not t:
+@router.patch("/tasks/{task_id}/status", response_model=TaskOut)
+def update_task_status(task_id: int, status: str, db: Session = Depends(get_db)):
+    db_task = db.query(DBTask).filter(DBTask.id == task_id).first()
+    if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
-    t.status = status
-    tasks_db[task_id] = t
-    return t
+    db_task.status = status
+    db.commit()
+    db.refresh(db_task)
+    return db_task
