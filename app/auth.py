@@ -9,15 +9,27 @@ from app.db_models import SessionLocal, User as DBUser
 
 app = FastAPI()
 
-SECRET_KEY = "your_secret_key"
-ALGORITHM = "HS256"
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+SECRET_KEY = os.getenv("JWT_SECRET", "61313c0afff56df25a032b86a2aef63f82439e32eff06c11649fb568c7e732f5")
+ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 class User(BaseModel):
     username: str
+    email: str
     role: str
+
+class UserRegister(BaseModel):
+    username: str
+    email: str
+    password: str
+    role: str = "user"
 
 class Token(BaseModel):
     access_token: str
@@ -48,12 +60,20 @@ def create_access_token(data: dict):
     return jwt.encode(data, SECRET_KEY, algorithm=ALGORITHM)
 
 @app.post("/register")
-def register(user: User, password: str, db: Session = Depends(get_db)):
-    db_user = get_user(db, user.username)
-    if db_user:
-        raise HTTPException(status_code=400, detail="User already exists")
-    hashed_password = pwd_context.hash(password)
-    new_user = DBUser(username=user.username, hashed_password=hashed_password, role=user.role)
+def register(user: UserRegister, db: Session = Depends(get_db)):
+    if len(user.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long")
+        
+    db_user_username = get_user(db, user.username)
+    if db_user_username:
+        raise HTTPException(status_code=400, detail="Username already exists")
+        
+    db_user_email = db.query(DBUser).filter(DBUser.email == user.email).first()
+    if db_user_email:
+        raise HTTPException(status_code=400, detail="Email already exists")
+        
+    hashed_password = pwd_context.hash(user.password)
+    new_user = DBUser(username=user.username, email=user.email, hashed_password=hashed_password, role=user.role)
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
@@ -64,7 +84,11 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=401, detail="Incorrect username or password")
-    access_token = create_access_token({"sub": user.username, "role": user.role})
+    access_token = create_access_token({
+        "sub": str(user.username),
+        "email": str(user.email),
+        "role": user.role
+    })
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app.get("/me", response_model=User)
@@ -80,7 +104,7 @@ def read_users_me(token: str = Depends(oauth2_scheme), db: Session = Depends(get
         user = get_user(db, username)
         if user is None:
             raise HTTPException(status_code=401, detail="User not found")
-        return User(username=username, role=role)
+        return User(username=username, email=user.email, role=role)
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
