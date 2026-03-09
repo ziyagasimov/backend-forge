@@ -1,11 +1,12 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 from app.db_models import SessionLocal, User as DBUser
+from datetime import datetime, timedelta, timezone
 
 app = FastAPI()
 
@@ -16,6 +17,7 @@ load_dotenv()
 
 SECRET_KEY = os.getenv("JWT_SECRET", "61313c0afff56df25a032b86a2aef63f82439e32eff06c11649fb568c7e732f5")
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("ACCESS_TOKEN_EXPIRE_HOURS", "24"))
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -26,9 +28,9 @@ class User(BaseModel):
     role: str
 
 class UserRegister(BaseModel):
-    username: str
-    email: str
-    password: str
+    username: str = Field(..., min_length=3, max_length=50)
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=128)
     role: str = "user"
 
 class Token(BaseModel):
@@ -56,14 +58,19 @@ def authenticate_user(db: Session, username: str, password: str):
         return None
     return user
 
-def create_access_token(data: dict):
-    return jwt.encode(data, SECRET_KEY, algorithm=ALGORITHM)
+def create_access_token(data: dict) -> str:
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+    to_encode.update({"exp": expire, "iat": datetime.now(timezone.utc)})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 @app.post("/register")
 def register(user: UserRegister, db: Session = Depends(get_db)):
-    if len(user.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long")
-        
+    # Validate role to prevent privilege escalation
+    allowed_roles = {"user", "member"}
+    if user.role not in allowed_roles:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    
     db_user_username = get_user(db, user.username)
     if db_user_username:
         raise HTTPException(status_code=400, detail="Username already exists")

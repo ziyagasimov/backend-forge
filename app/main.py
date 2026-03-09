@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.db_models import init_db
 from app.auth import app as auth_app
@@ -15,6 +16,15 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="IdeaForge AI Backend", lifespan=lifespan)
+
+# ── CORS middleware ──────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Include routers (Removed redundant PraxisForge routers)
 
